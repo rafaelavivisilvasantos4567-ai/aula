@@ -1,39 +1,18 @@
 from flask import Flask, render_template, request, jsonify
 import psycopg2
-from urllib.parse import urlparse
 import os
 
 app = Flask(__name__)
 
-# 🔧 CONFIGURAÇÃO PARA RENDER + NEON
-# Usa variável de ambiente no Render, fallback para local
-DATABASE_URL = os.getenv('DATABASE_URL')
+# 🔧 SUA CONNECTION STRING DO NEON (sem o 'psql' no início)
+# Remova o 'psql ' do início e as aspas simples
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://neondb_owner:npg_0wyUqmO6TBxd@ep-falling-poetry-a4osknmd-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require')
 
 def get_db_connection():
-    """Conecta ao banco de dados (Neon no Render, local em desenvolvimento)"""
-    if DATABASE_URL:
-        # Modo produção (Render + Neon)
-        try:
-            # Parse da URL do Neon
-            url = urlparse(DATABASE_URL)
-            
-            # Configuração de conexão para Neon
-            conn = psycopg2.connect(
-                database=url.path[1:],  # Remove a barra do início
-                user=url.username,
-                password=url.password,
-                host=url.hostname,
-                port=url.port or 5432,
-                sslmode='require'  # Neon requer SSL
-            )
-            print("✅ Conectado ao Neon PostgreSQL")
-            return conn
-        except Exception as e:
-            print(f"❌ Erro ao conectar ao Neon: {e}")
-            return None
-    else:
-        # Modo desenvolvimento (local)
-        try:
+    """Conecta ao banco de dados"""
+    try:
+        # Para desenvolvimento local (sem DATABASE_URL)
+        if not DATABASE_URL or 'localhost' in DATABASE_URL:
             conn = psycopg2.connect(
                 host="localhost",
                 database="postgres",
@@ -43,17 +22,25 @@ def get_db_connection():
             )
             print("✅ Conectado ao PostgreSQL local (porta 5433)")
             return conn
-        except Exception as e:
-            print(f"❌ Erro ao conectar localmente: {e}")
-            return None
+       
+        # Para produção (Neon)
+        else:
+            # Conecta diretamente com a URL do Neon
+            conn = psycopg2.connect(DATABASE_URL)
+            print("✅ Conectado ao Neon PostgreSQL na nuvem")
+            return conn
+           
+    except Exception as e:
+        print(f"❌ Erro na conexão: {e}")
+        return None
 
 def criar_tabela():
     """Cria a tabela se não existir"""
     conn = get_db_connection()
     if not conn:
-        print("⚠️  Não foi possível conectar para criar tabela")
+        print("⚠️  Não foi possível conectar ao banco")
         return False
-    
+   
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -61,8 +48,7 @@ def criar_tabela():
                 id SERIAL PRIMARY KEY,
                 nome VARCHAR(100),
                 email VARCHAR(100),
-                telefone VARCHAR(20),
-                data_cadastro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                telefone VARCHAR(20)
             )
         """)
         conn.commit()
@@ -86,12 +72,12 @@ def get_clientes():
     conn = get_db_connection()
     if not conn:
         return jsonify({'erro': 'Falha na conexão com o banco'}), 500
-    
+   
     try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM clientes ORDER BY id DESC")
+        cur.execute("SELECT * FROM clientes ORDER BY id")
         rows = cur.fetchall()
-        
+       
         # Converter para dicionários
         clientes = []
         for row in rows:
@@ -99,10 +85,9 @@ def get_clientes():
                 'id': row[0],
                 'nome': row[1],
                 'email': row[2],
-                'telefone': row[3],
-                'data_cadastro': str(row[4]) if row[4] else None
+                'telefone': row[3]
             })
-        
+       
         return jsonify(clientes)
     except Exception as e:
         return jsonify({'erro': str(e)}), 500
@@ -114,15 +99,10 @@ def get_clientes():
 @app.route('/clientes', methods=['POST'])
 def add_cliente():
     data = request.json
-    
-    # Validação básica
-    if not data.get('nome') or not data.get('email'):
-        return jsonify({'erro': 'Nome e email são obrigatórios'}), 400
-    
     conn = get_db_connection()
     if not conn:
         return jsonify({'erro': 'Falha na conexão com o banco'}), 500
-    
+   
     try:
         cur = conn.cursor()
         cur.execute(
@@ -131,15 +111,10 @@ def add_cliente():
         )
         id_novo = cur.fetchone()[0]
         conn.commit()
-        
-        # Mensagem diferente para produção/desenvolvimento
-        mensagem = "Cliente adicionado ao Neon!" if DATABASE_URL else "Cliente adicionado localmente!"
-        
-        return jsonify({
-            'id': id_novo, 
-            'msg': mensagem,
-            'ambiente': 'production' if DATABASE_URL else 'development'
-        })
+       
+        mensagem = 'Cliente adicionado ao Neon!' if 'neon.tech' in DATABASE_URL else 'Cliente adicionado localmente!'
+       
+        return jsonify({'id': id_novo, 'msg': mensagem})
     except Exception as e:
         return jsonify({'erro': str(e)}), 500
     finally:
@@ -150,14 +125,10 @@ def add_cliente():
 @app.route('/clientes/<int:id>', methods=['PUT'])
 def update_cliente(id):
     data = request.json
-    
-    if not data.get('nome') or not data.get('email'):
-        return jsonify({'erro': 'Nome e email são obrigatórios'}), 400
-    
     conn = get_db_connection()
     if not conn:
         return jsonify({'erro': 'Falha na conexão com o banco'}), 500
-    
+   
     try:
         cur = conn.cursor()
         cur.execute(
@@ -178,7 +149,7 @@ def delete_cliente(id):
     conn = get_db_connection()
     if not conn:
         return jsonify({'erro': 'Falha na conexão com o banco'}), 500
-    
+   
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM clientes WHERE id=%s", (id,))
@@ -193,60 +164,50 @@ def delete_cliente(id):
 # Rota para verificar status
 @app.route('/status')
 def status():
-    """Verifica status da aplicação e banco"""
     conn = get_db_connection()
-    
-    status_info = {
-        'app': 'online',
-        'ambiente': 'production' if DATABASE_URL else 'development',
-        'database_url_configurada': bool(DATABASE_URL)
-    }
-    
+   
     if conn:
         try:
             cur = conn.cursor()
             cur.execute("SELECT version()")
-            status_info['database'] = 'online'
-            status_info['postgres_version'] = cur.fetchone()[0]
-            
+            versao = cur.fetchone()[0]
+           
             cur.execute("SELECT COUNT(*) FROM clientes")
-            status_info['total_clientes'] = cur.fetchone()[0]
-            
-            cur.execute("SELECT current_database()")
-            status_info['database_name'] = cur.fetchone()[0]
-            
+            total = cur.fetchone()[0]
+           
             conn.close()
+           
+            return jsonify({
+                'status': 'online',
+                'banco': 'Neon PostgreSQL' if 'neon.tech' in DATABASE_URL else 'PostgreSQL Local',
+                'versao': versao,
+                'total_clientes': total
+            })
         except Exception as e:
-            status_info['database'] = 'error'
-            status_info['database_error'] = str(e)
+            return jsonify({'status': 'error', 'erro': str(e)})
     else:
-        status_info['database'] = 'offline'
-    
-    return jsonify(status_info)
+        return jsonify({'status': 'offline', 'erro': 'Não conectado ao banco'})
 
 # Iniciar app
 if __name__ == '__main__':
-    # Criar tabela se não existir
     criar_tabela()
-    
-    # Configuração do servidor
+   
+    # Porta para Render (usar variável de ambiente) ou 5000 local
     port = int(os.getenv('PORT', 5000))
-    debug_mode = os.getenv('FLASK_DEBUG', 'True').lower() == 'true'
-    
+   
     print("=" * 50)
     print("🚀 SISTEMA DE CADASTRO DE CLIENTES")
     print("=" * 50)
-    
-    if DATABASE_URL:
-        print("🌐 Ambiente: PRODUÇÃO (Render + Neon)")
-        print("💾 Banco: Neon PostgreSQL na nuvem")
+   
+    if 'neon.tech' in DATABASE_URL:
+        print("🌐 Ambiente: PRODUÇÃO (Neon PostgreSQL)")
+        print(f"📡 Host: ep-falling-poetry-a4osknmd-pooler.us-east-1.aws.neon.tech")
     else:
-        print("💻 Ambiente: DESENVOLVIMENTO (local)")
-        print("💾 Banco: PostgreSQL local (porta 5433)")
-    
+        print("💻 Ambiente: DESENVOLVIMENTO (PostgreSQL Local)")
+        print("🔌 Banco: PostgreSQL (porta 5433)")
+   
     print(f"🔧 Porta: {port}")
-    print(f"🐛 Debug: {debug_mode}")
     print("=" * 50)
-    
-    # Iniciar servidor
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    print("🌐 Servidor rodando...")
+   
+    app.run(host='0.0.0.0', port=port, debug=True)
